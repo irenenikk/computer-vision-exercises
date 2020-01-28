@@ -21,9 +21,11 @@ vector<String> getFilesFromFolder(String folder){
 }
 
 int main(int argc, char** argv ) {
+    // camera calibration code based on code from opencv 3 cookbook by Laganiere
     // get folder of images as argument
     String calibrationImageFolder = argv[1];
     String undistortionImageFolder = argv[2];
+    /*
     auto calibrationFiles = getFilesFromFolder(calibrationImageFolder);
     // define board size
     Size boardSize(9,6);
@@ -68,7 +70,9 @@ int main(int argc, char** argv ) {
     Mat cameraMatrix;
     Mat distCoeffs;
     calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix, distCoeffs, rvecs, tvecs, 0);
-    // do undistorting
+    // undistorting code based on Laganiere and 
+    // OpenCV camera calibration tutorial: https://docs.opencv.org/3.4.9/d4/d94/tutorial_camera_calibration.html
+    // undistorting stamp images
     cout << "Undistorting images" << endl;
     // the x and y mappings
     Mat mapx, mapy;
@@ -77,15 +81,56 @@ int main(int argc, char** argv ) {
         Mat undistorted;
         String imageFile = undistortionFiles[i];
         cout << "Undistorting image " << imageFile << endl;
-        Mat image = imread(samples::findFile(imageFile), IMREAD_COLOR);
+        Mat image = imread(samples::findFile(imageFile), IMREAD_GRAYSCALE);
         // only run initialisation on the first time
         if (i == 0) {
             cout << "Calculating distortion mappings" << endl;
             Size imageSize = image.size();
-            initUndistortRectifyMap(cameraMatrix, distCoeffs, Mat(), Mat(), imageSize, CV_32FC1, mapx, mapy);
+            auto optimalMatrix = getOptimalNewCameraMatrix(cameraMatrix, distCoeffs, imageSize, 1, imageSize, 0);
+            initUndistortRectifyMap(cameraMatrix, distCoeffs, Mat(), optimalMatrix, imageSize, CV_16SC2, mapx, mapy);
         }
         remap(image, undistorted, mapx, mapy, INTER_LINEAR);
+        imshow("Original image", image);
+        waitKey(0);
         imshow("Undistorted image", undistorted);
-        waitKey(1000);
+        waitKey(0);
+    }
+    */
+    // corner detection code based on OpenCV tutorial:
+    // https://docs.opencv.org/3.4/d8/dd8/tutorial_good_features_to_track.html
+    // corner detections
+    RNG rng(12345);
+    int maxCorners = 4;
+    vector<Point2f> corners;
+    double qualityLevel = 0.01;
+    double minDistance = 700;
+    int blockSize = 50, gradientSize = 5;
+    bool useHarrisDetector = false;
+    double k = 0.01;
+    auto undistortionFiles = getFilesFromFolder(undistortionImageFolder);
+    for(int i = 0; i < undistortionFiles.size(); i++) {
+        String imageFile = undistortionFiles[i];
+        cout << "Detecting corners for " << imageFile << endl;
+        Mat image = imread(samples::findFile(imageFile), IMREAD_GRAYSCALE);
+        Mat copy = image.clone();
+        threshold(copy, copy, 0, 255, THRESH_BINARY + THRESH_OTSU);
+        goodFeaturesToTrack(copy,
+                            corners,
+                            maxCorners,
+                            qualityLevel,
+                            minDistance,
+                            Mat(),
+                            blockSize,
+                            gradientSize,
+                            useHarrisDetector,
+                            k);
+        cout << "Number of corners detected: " << corners.size() << endl;
+        int radius = 20;
+        for( size_t i = 0; i < corners.size(); i++ )
+        {
+            circle(copy, corners[i], radius, Scalar(rng.uniform(0,255), rng.uniform(0, 256), rng.uniform(0, 256)), FILLED );
+        }
+        imshow("Corners detected", copy);
+        waitKey(0);
     }
 }
