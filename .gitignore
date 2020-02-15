@@ -5,3 +5,8 @@ opencv*
 */CMakeCache.txt
 */cmake_install.cmake
 */Makefile
+*LibGIST
+*/Testing set
+*/Training set
+*.cmake
+*build
