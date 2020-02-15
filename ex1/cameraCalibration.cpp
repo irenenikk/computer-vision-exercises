@@ -3,6 +3,8 @@
 #include <string>
 #include <iostream>
 #include <vector>
+#include <algorithm>
+#include <iterator>
 
 using namespace cv;
 using namespace std;
@@ -94,6 +96,9 @@ int main(int argc, char** argv ) {
                 objectPoints.push_back(objectCorners);
                 imagePoints.push_back(imageCorners);
             }
+            //drawChessboardCorners(image, boardSize, Mat(imageCorners), found);
+            //imshow("Chess board with corners", image);
+            //waitKey(0);
         } else {
             cout << "Cannot use image " << imageFile << endl;
         }
@@ -105,6 +110,10 @@ int main(int argc, char** argv ) {
     Mat cameraMatrix;
     Mat distCoeffs;
     calibrateCamera(objectPoints, imagePoints, imageSize, cameraMatrix, distCoeffs, rvecs, tvecs, 0);
+    cout << "intrinsic parameters" << endl;
+    cout << cameraMatrix << endl;
+    cout << "Distortion coefficients" << endl;
+    cout << distCoeffs << endl;
     // corner detection code based on OpenCV tutorial:
     // https://docs.opencv.org/3.4/d8/dd8/tutorial_good_features_to_track.html
     // corner detections
@@ -147,14 +156,6 @@ int main(int argc, char** argv ) {
         imshow("Corners detected", copy);
         imwrite("processed_images/" + to_string(i) + "_corners.jpg", copy);
         waitKey(0);
-        /*
-        approxPolyDP(Mat(corners), corners, arcLength(Mat(corners), true) * 0.01, true);
-        if (corners.size() != 4)
-        {
-            cout << "Not a quadrilateral object" << endl;
-            continue;
-        }    
-        */    
         sortCorners(corners);
         // perspective correction
         Mat target = Mat::zeros(copy.rows, copy.cols, CV_8UC3);
@@ -172,7 +173,8 @@ int main(int argc, char** argv ) {
         if (i == 0) {
             cout << "Calculating distortion mappings" << endl;
             Size imageSize = target.size();
-            auto optimalMatrix = getOptimalNewCameraMatrix(cameraMatrix, distCoeffs, imageSize, 1, imageSize, 0);
+            // the undistorted picture will correspond to picture taken with a camera with a new matrix
+            auto optimalMatrix = getOptimalNewCameraMatrix(cameraMatrix, distCoeffs, imageSize, 0, imageSize, 0);
             initUndistortRectifyMap(cameraMatrix, distCoeffs, Mat(), optimalMatrix, imageSize, CV_16SC2, mapx, mapy);
         }
         remap(target, undistorted, mapx, mapy, INTER_LINEAR);
