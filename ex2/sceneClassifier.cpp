@@ -72,6 +72,12 @@ void saveVectorofVectorsToFile(String filename, String variable, vector<vector<f
     fs.release();
 }
 
+void saveVectorofMatricesToFile(String filename, String variable, vector<Mat> content){
+    FileStorage fs(filename, FileStorage::WRITE);
+    fs << variable << content;
+    fs.release();
+}
+
 void saveMatrixToFile(String filename, String variable, Mat content){
     FileStorage fs(filename, FileStorage::WRITE);
     fs << variable << content;
@@ -80,7 +86,15 @@ void saveMatrixToFile(String filename, String variable, Mat content){
 
 Mat loadMatrix(String filename, String variable){
     FileStorage fs(filename, FileStorage::READ);
-    Mat matrix; 
+    Mat matrix;
+    fs[variable] >> matrix;
+    fs.release();
+    return matrix;
+}
+
+vector<Mat> loadVectorOfMatrices(String filename, String variable){
+    FileStorage fs(filename, FileStorage::READ);
+    vector<Mat> matrix; 
     fs[variable] >> matrix;
     fs.release();
     return matrix;
@@ -94,6 +108,50 @@ vector<vector<float>> loadVectorOfVectors(String filename, String variable){
     return vector;
 }
 
+void drawHistogram(Mat image, Mat b_hist, Mat g_hist, Mat r_hist){
+    // using code from this tutorial: https://docs.opencv.org/3.4/d8/dbc/tutorial_histogram_calculation.html
+    int hist_w = 512, hist_h = 400;
+    int histSize = 256;
+    int bin_w = cvRound((double) hist_w/histSize);
+    Mat histImage(hist_h, hist_w, CV_8UC3, Scalar( 0,0,0));
+    for( int i = 1; i < histSize; i++ ){
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(b_hist.at<float>(i-1))),
+              Point(bin_w*(i), hist_h - cvRound(b_hist.at<float>(i))),
+              Scalar(255, 0, 0), 2, 8, 0);
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(g_hist.at<float>(i-1))),
+              Point(bin_w*(i), hist_h - cvRound(g_hist.at<float>(i))),
+              Scalar(0, 255, 0), 2, 8, 0);
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(r_hist.at<float>(i-1))),
+              Point(bin_w*(i), hist_h - cvRound(r_hist.at<float>(i))),
+              Scalar(0, 0, 255), 2, 8, 0);
+    }
+    imshow("Image", image);
+    imshow("Histogram", histImage);
+    waitKey();
+}
+
+Mat getColorHistogram(Mat image){
+    // using code from this tutorial: https://docs.opencv.org/3.4/d8/dbc/tutorial_histogram_calculation.html
+    int histSize = 256;
+    vector<Mat> bgr_planes;
+    split(image, bgr_planes);
+    float range[] = { 0, 256 };
+    const float* histRange = { range };
+    Mat b_hist, g_hist, r_hist;
+    calcHist(&bgr_planes[0], 1, 0, Mat(), b_hist, 1, &histSize, &histRange, true, false);
+    calcHist(&bgr_planes[1], 1, 0, Mat(), g_hist, 1, &histSize, &histRange, true, false);
+    calcHist(&bgr_planes[2], 1, 0, Mat(), r_hist, 1, &histSize, &histRange, true, false);
+    normalize(b_hist, b_hist, 0, 1, NORM_MINMAX, -1, Mat());
+    normalize(g_hist, g_hist, 0, 1, NORM_MINMAX, -1, Mat());
+    normalize(r_hist, r_hist, 0, 1, NORM_MINMAX, -1, Mat());
+    drawHistogram(image, b_hist, g_hist, r_hist);
+    Mat concatTemp;
+    Mat concatHist;
+    vconcat(b_hist, g_hist, concatTemp);
+    vconcat(concatTemp, r_hist, concatHist);
+    return concatHist.t();
+}
+
 void getData(vector<Mat> &images, vector<int> &labels, map<String, int> &labelToCat, 
                 map<int, String> &catToLabel, int &runningLabelCat, String folder){
     auto folderNames = getFilesFromFolder(folder);
@@ -102,36 +160,41 @@ void getData(vector<Mat> &images, vector<int> &labels, map<String, int> &labelTo
         Mat image = get<0>(imageTuple);
         String label = get<1>(imageTuple);
         images.push_back(image);
+        auto colorHistogram = getColorHistogram(image);
         int labelCategory = getLabelCategorical(label, labelToCat, catToLabel, runningLabelCat);
         labels.push_back(labelCategory);
     }
 }
 
-void getRawFeatures(vector<Mat> trainingImages, Mat &allSiftDescriptors, 
-                    vector<vector<float>> &allGISTFeatures, Mat &b_hist, Mat &g_hist, Mat &r_hist){
+void getRawFeatures(vector<Mat> allTrainingImages, vector<Mat> &allSiftDescriptors, 
+                    vector<vector<float>> &allGISTFeatures, Mat &colorHistograms){
     GIST gist_ext(DEFAULT_PARAMS);
     cout << "Getting raw features from images" << endl;
     // calculate the sift features
     Ptr<Feature2D> f2d = xfeatures2d::SIFT::create();
     String SIFTFile = "SIFTDescriptors.yml";
     String GISTFile = "GISTFeatures.yml";
+    String colorHistogramFile = "colorHistogram.yml";
     String siftVariableName = "allSiftDescriptors";
     String gistVariableName = "gistFeatures";
-    ifstream dictionaryFile(SIFTFile);
+    String colorHistogramVariable = "colorHistogram";
+    ifstream siftFeatureFile(SIFTFile);
     ifstream gistFeatureFile(GISTFile);
-    if (!dictionaryFile || !gistFeatureFile){
+    ifstream colorFeatureFile(colorHistogramFile);
+    if (!siftFeatureFile || !gistFeatureFile || !colorFeatureFile) {
         cout << "Extracting features for training data" << endl;
-        for (size_t i=0; i<trainingImages.size(); i++) {
-            Mat image = trainingImages[i];
+        for (size_t i=0; i<allTrainingImages.size(); i++) {
+            Mat image = allTrainingImages[i];
             Mat grayImage;
             cvtColor(image, grayImage, COLOR_BGR2GRAY);
             // SIFT
             vector<KeyPoint> keypoints;
             f2d->detect(grayImage, keypoints);
             // draw the found keypoints
-            //drawKeypoints(grayImage, keypoints, image);
-            //imshow("Image with keypoints", image);
-            //waitKey(0);
+            //Mat imagewithKeypoints;
+            //drawKeypoints(image, keypoints, imagewithKeypoints);
+            //imshow("Image with keypoints", imagewithKeypoints);
+            //waitKey();
             Mat descriptors;
             f2d->compute(grayImage, keypoints, descriptors);
             allSiftDescriptors.push_back(descriptors);
@@ -140,29 +203,27 @@ void getRawFeatures(vector<Mat> trainingImages, Mat &allSiftDescriptors,
             gist_ext.extract(image, GISTFeatures);
             allGISTFeatures.push_back(GISTFeatures);
             // Color histogram
-            int histSize = 256;
-            vector<Mat> bgr_planes;
-            split(image, bgr_planes);
-            float range[] = { 0, 256 };
-            const float* histRange = { range };
-            calcHist(&bgr_planes[0], 1, 0, Mat(), b_hist, 1, &histSize, &histRange, true, false);
-            calcHist(&bgr_planes[1], 1, 0, Mat(), g_hist, 1, &histSize, &histRange, true, false);
-            calcHist(&bgr_planes[2], 1, 0, Mat(), r_hist, 1, &histSize, &histRange, true, false);
+            Mat concatHist = getColorHistogram(image);
+            colorHistograms.push_back(concatHist);
         }
-        saveMatrixToFile(SIFTFile, siftVariableName, allSiftDescriptors);
+        saveVectorofMatricesToFile(SIFTFile, siftVariableName, allSiftDescriptors);
+        saveMatrixToFile(colorHistogramFile, colorHistogramVariable, colorHistograms);
         saveVectorofVectorsToFile(GISTFile, gistVariableName, allGISTFeatures);
     } else {
-        Mat allSiftDescriptors = loadMatrix(SIFTFile, siftVariableName);
-        vector<vector<float>> allGISTFeatures = loadVectorOfVectors(GISTFile, gistVariableName);
+        allSiftDescriptors = loadVectorOfMatrices(SIFTFile, siftVariableName);
+        cout << "loaded sift descriptors" << endl;
+        allGISTFeatures = loadVectorOfVectors(GISTFile, gistVariableName);
+        cout << "loaded gist descriptors" << endl;
+        colorHistograms = loadMatrix(colorHistogramFile, colorHistogramVariable);
+        cout << "loaded color descriptors" << endl;
     }
 }
 
-void getBowSiftFeatures(vector<Mat> images, Ptr<BOWImgDescriptorExtractor> &bowDE, Mat &BOWDescriptors){
-    cout << "Starting KNN for SIFT features" << endl;
-    String BOWDescriptorFileName = "BOWDescriptors.yml";
+void getBowSiftFeatures(vector<Mat> images, Ptr<BOWImgDescriptorExtractor> &bowDE, Mat &BOWDescriptors, String BOWDescriptorFileName){
     String BOWDescriptorVariable = "BOWDescriptors";
     ifstream BOWDescriptorFile(BOWDescriptorFileName);
     if (!BOWDescriptorFile) {
+        cout << "Starting KNN for SIFT features" << endl;
         Ptr<Feature2D> detector = xfeatures2d::SIFT::create();
         for (size_t i=0; i<images.size(); i++) {
             Mat image = images[i];
@@ -176,21 +237,22 @@ void getBowSiftFeatures(vector<Mat> images, Ptr<BOWImgDescriptorExtractor> &bowD
         }
         saveMatrixToFile(BOWDescriptorFileName, BOWDescriptorVariable, BOWDescriptors);
     } else {
+        cout << "Loading SIFT BOW descriptors from file " << BOWDescriptorFileName << endl;
         BOWDescriptors = loadMatrix(BOWDescriptorFileName, BOWDescriptorVariable);
     }
 }
 
-Ptr<BOWImgDescriptorExtractor> getBowDE(Mat allSiftDescriptors){
+Ptr<BOWImgDescriptorExtractor> getBowDE(Mat trainingSiftDescriptors){
     String dictionaryName = "dictionary";
     String dictionaryFileName = dictionaryName + ".yml";
     ifstream dictionaryFile(dictionaryFileName);
     Mat dictionary;
     if (!dictionaryFile){
         cout << "Training a BOW dictionary" << endl;
-        int dictionarySize = 600;
+        int dictionarySize = 1200;
         TermCriteria termCrit = TermCriteria();
         BOWKMeansTrainer bowTrainer(dictionarySize, termCrit, 1, KMEANS_PP_CENTERS);
-        dictionary = bowTrainer.cluster(allSiftDescriptors);
+        dictionary = bowTrainer.cluster(trainingSiftDescriptors);
         saveMatrixToFile(dictionaryFileName, dictionaryName, dictionary);
         cout << "Saved dictionary to " << dictionaryFileName << endl;
     } else {
@@ -205,16 +267,16 @@ Ptr<BOWImgDescriptorExtractor> getBowDE(Mat allSiftDescriptors){
     return bowDE;
 }
 
-vector<vector<float>> getTestGISTFeatures(vector<Mat> testImages){
+void getTestFeatures(vector<Mat> testImages, vector<vector<float>> &testGISTFeatures, vector<Mat> &colorHistograms){
     GIST gist_ext(DEFAULT_PARAMS);
-    vector<vector<float>> testGISTFeatures;
     for (size_t i=0; i<testImages.size(); i++) {
         Mat image = testImages[i];
         vector<float> GISTFeatures;
         gist_ext.extract(image, GISTFeatures);
         testGISTFeatures.push_back(GISTFeatures);
+        Mat colorHistogram = getColorHistogram(image);
+        colorHistograms.push_back(colorHistogram);
     }
-    return testGISTFeatures;
 }
 
 Mat vectorToMat(vector<vector<float>> trainingGISTFeatures){
@@ -225,6 +287,15 @@ Mat vectorToMat(vector<vector<float>> trainingGISTFeatures){
         }
     }
     return trainingGISTMat;
+}
+
+Ptr<SVM> createSVM(Mat trainingData, Mat trainingLabels, SVM::KernelTypes kernel){
+    Ptr<SVM> svmGIST = SVM::create();
+    svmGIST->setType(SVM::C_SVC);
+    svmGIST->setKernel(kernel);
+    svmGIST->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 100, 1e-6));
+    svmGIST->train(trainingData, ROW_SAMPLE, trainingLabels);
+    return svmGIST;
 }
 
 int main(int argc, char* argv[]){
@@ -240,75 +311,145 @@ int main(int argc, char* argv[]){
     getData(allTrainingImages, allTrainingLabels, labelToCat, catToLabel, runningLabelCat, trainingSetFolder);
     getData(testImages, testLabels, labelToCat, catToLabel, runningLabelCat, testSetFolder);
     // get SIFT features for training data
-    Mat allSiftDescriptors;
+    vector<Mat> allSiftDescriptors;
     vector<vector<float>> allGISTFeatures;
-    Mat b_hist, g_hist, r_hist;
-    getRawFeatures(allTrainingImages, allSiftDescriptors, allGISTFeatures, b_hist, g_hist, r_hist);
-    // Run KNN in order to bin descriptors
-    // TODO: does this create a data leakage? --> YES it does
-    auto bowDE = getBowDE(allSiftDescriptors);
-    Mat allBowDescriptors;
-    getBowSiftFeatures(allTrainingImages, bowDE, allBowDescriptors);
+    Mat allColorHistograms;
+    getRawFeatures(allTrainingImages, allSiftDescriptors, allGISTFeatures, allColorHistograms);
+    cout << "color histogram " << allColorHistograms.size() << endl;
     // shuffle the test dataset before splitting into dev and test
+    // the shuffled order will always be the same because the seed is always the same
+    cout << "Splitting indices into training, development and test sets" << endl;
     vector<int> indices(allTrainingImages.size());
     iota(indices.begin(), indices.end(), 0);
     random_shuffle(indices.begin(), indices.end());
     vector<int> developmentIndices(indices.begin(), indices.begin() + 100);
     vector<int> trainingIndices(indices.begin() + 100, indices.end());
+
     // separate training set
-    Mat trainingBowDescriptors;
+    Mat trainingSIFTDescriptors;
     Mat trainingLabels;
     vector<vector<float>> trainingGISTFeatures;
-    Mat colorHistogram;
+    Mat trainingColorHistograms;
+    vector<Mat> trainingImages;
+    cout << "Cretaing training set" << endl;
     for (size_t i=0; i<trainingIndices.size(); i++) {
         auto index = trainingIndices[i];
-        trainingBowDescriptors.push_back(allBowDescriptors.row(index));
+        trainingImages.push_back(allTrainingImages[index]);
+        trainingSIFTDescriptors.push_back(allSiftDescriptors[i]);
         trainingLabels.push_back(allTrainingLabels[index]);
         trainingGISTFeatures.push_back(allGISTFeatures[index]);
-        Mat concatTemp;
-        Mat concatHist;
-        hconcat(b_hist, g_hist, concatTemp);
-        hconcat(concatTemp, r_hist, concatHist);
-        colorHistogram.push_back(concatHist.row(i));
+        trainingColorHistograms.push_back(allColorHistograms.row(index));
     }
-    Mat testBowDescriptors;
-    getBowSiftFeatures(testImages, bowDE, testBowDescriptors);
-    auto testGISTFeatures = getTestGISTFeatures(testImages);
+    cout << "Training with a training set of size " << trainingIndices.size() << endl;
+
+    // Run KNN in order to bin descriptors
+    auto bowDE = getBowDE(trainingSIFTDescriptors);
+    Mat trainingBowDescriptors;
+    String trainingBOWDescriptorFileName = "BOWDescriptors.yml";
+    getBowSiftFeatures(trainingImages, bowDE, trainingBowDescriptors, trainingBOWDescriptorFileName);
+
     // Train the SVM
     cout << "Training an SVM with SIFT and GIST features" << endl;
-    /*
-    Ptr<SVM> svmSIFT = SVM::create();
-    svmSIFT->setType(SVM::C_SVC);
-    svmSIFT->setKernel(SVM::LINEAR);
-    svmSIFT->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 100, 1e-6));
-    svmSIFT->train(trainingBowDescriptors, ROW_SAMPLE, trainingLabels);
-    */
+    auto svmSIFT = createSVM(trainingBowDescriptors, trainingLabels, SVM::LINEAR);
     auto trainingGISTMat = vectorToMat(trainingGISTFeatures);
-    Ptr<SVM> svmGIST = SVM::create();
-    svmGIST->setType(SVM::C_SVC);
-    svmGIST->setKernel(SVM::LINEAR);
-    svmGIST->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 100, 1e-6));
-    svmGIST->train(trainingGISTMat, ROW_SAMPLE, trainingLabels);
+    auto svmGIST = createSVM(trainingGISTMat, trainingLabels, SVM::LINEAR);
+    auto svmColor = createSVM(trainingColorHistograms, trainingLabels, SVM::LINEAR);
+
+    // create development set of sift features
+    Mat developmentSIFTDescriptors;
+    vector<Mat> developmentImages;
+    cout << "Creating development set of SIFT features" << endl;
+    for (size_t i=0; i<developmentIndices.size(); i++) {
+        auto index = developmentIndices[i];
+        developmentImages.push_back(allTrainingImages[index]);
+    }
+    Mat developmentBowDescriptors;
+    String devBOWDescriptorFileName = "devBOWDescriptors.yml";
+    getBowSiftFeatures(developmentImages, bowDE, developmentBowDescriptors, devBOWDescriptorFileName);
+
     cout << "Testing the SVM with using the development set" << endl;
+    // TODO: train an svm using color histograms
     int siftCorrect = 0;
     int gistCorrect = 0;
+    int colorCorrect = 0;
     for (size_t i=0; i<developmentIndices.size(); i++) {
-        //auto siftDescriptors = trainingBowDescriptors.row(developmentIndices[i]);
-        //auto siftPredictedLabel = svmSIFT->predict(siftDescriptors);
-        auto gistDescriptors = trainingGISTMat.row(developmentIndices[i]);
+        auto index = developmentIndices[i];
+
+        auto siftDescriptors = developmentBowDescriptors.row(i);
+        auto siftPredictedLabel = svmSIFT->predict(siftDescriptors);
+
+        auto gistDescriptors = allGISTFeatures[index];
         auto gistPredictedLabel = svmGIST->predict(gistDescriptors);
-        auto trueLabel = trainingLabels.row(developmentIndices[i]).ptr<int>(0)[0];
-        cout << "true label " << trueLabel << endl;
-        cout << "predicted label " << gistPredictedLabel << endl;
-        /*
+
+        auto colorFeatures = allColorHistograms.row(i);
+        auto colorPredictedLabel = svmColor->predict(colorFeatures);
+
+        auto trueLabel = allTrainingLabels[index];
         if (siftPredictedLabel == trueLabel){
             siftCorrect++;
         }
-        */
         if (gistPredictedLabel == trueLabel){
             gistCorrect++;
         }
+        if (colorPredictedLabel == trueLabel){
+            colorCorrect++;
+        }
     }
-    cout << "Accuracy using SIFT is " << ((float)siftCorrect/(float)testImages.size()) << endl;
-    cout << "Accuracy using GIST is " << ((float)gistCorrect/(float)testImages.size()) << endl;
+    cout << "Accuracy in the dev set using SIFT is " << ((float)siftCorrect/(float)developmentIndices.size()) << endl;
+    cout << "Accuracy in the dev set using GIST is " << ((float)gistCorrect/(float)developmentIndices.size()) << endl;
+    cout << "Accuracy in the dev set using color histograms is " << ((float)colorCorrect/(float)developmentIndices.size()) << endl;
+    cout << "Testing the SVM with using the test set" << endl;
+    Mat testBowDescriptors;
+    String testBOWDescriptorFileName = "testBOWDescriptors.yml";
+    getBowSiftFeatures(testImages, bowDE, testBowDescriptors, testBOWDescriptorFileName);
+    vector<vector<float>> testGISTFeatures;
+    vector<Mat> testColorHistograms;
+    getTestFeatures(testImages, testGISTFeatures, testColorHistograms);
+    auto testGISTMat = vectorToMat(trainingGISTFeatures);
+    int linearSiftCorrect = 0;
+    int linearGistCorrect = 0;
+    int linearColorCorrect = 0;
+    int rbfSiftCorrect = 0;
+    int rbfGistCorrect = 0;
+    int rbfColorCorrect = 0;
+    // create non-linear svms
+    auto rbfSvmSIFT = createSVM(trainingBowDescriptors, trainingLabels, SVM::RBF);
+    auto rbfSvmGIST = createSVM(trainingGISTMat, trainingLabels, SVM::RBF);
+    auto rbfSvmColor = createSVM(trainingColorHistograms, trainingLabels, SVM::RBF);
+    for (size_t i=0; i<testImages.size(); i++) {
+        auto siftDescriptors = testBowDescriptors.row(i);
+        auto linearSiftPredictedLabel = svmSIFT->predict(siftDescriptors);
+        auto rbfSiftPredictedLabel = rbfSvmSIFT->predict(siftDescriptors);
+        auto gistDescriptors = testGISTFeatures[i];
+        auto linearGistPredictedLabel = svmGIST->predict(gistDescriptors);
+        auto rbfGistPredictedLabel = rbfSvmGIST->predict(gistDescriptors);
+        auto colorFeatures = testColorHistograms[i];
+        auto linearColorPredictedLabel = svmColor->predict(colorFeatures);
+        auto rbfColorPredictedLabel = rbfSvmColor->predict(colorFeatures);
+        auto trueLabel = testLabels[i];
+        if (linearSiftPredictedLabel == trueLabel){
+            linearSiftCorrect++;
+        }
+        if (rbfSiftPredictedLabel == trueLabel){
+            rbfSiftCorrect++;
+        }        
+        if (linearGistPredictedLabel == trueLabel){
+            linearGistCorrect++;
+        }
+        if (rbfGistPredictedLabel == trueLabel){
+            rbfGistCorrect++;
+        }
+        if (linearColorPredictedLabel == trueLabel){
+            linearColorCorrect++;
+        }
+        if (rbfColorPredictedLabel == trueLabel){
+            rbfColorCorrect++;
+        }
+    }
+    cout << "Linear SVM accuracy in the test set using SIFT is " << ((float)linearSiftCorrect/(float)testImages.size()) << endl;
+    cout << "Linear SVM accuracy in the test set using GIST is " << ((float)linearGistCorrect/(float)testImages.size()) << endl;
+    cout << "Linear SVM accuracy in the dev set using color histograms is " << ((float)linearColorCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using SIFT is " << ((float)rbfSiftCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using GIST is " << ((float)rbfGistCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the dev set using color histograms is " << ((float)rbfColorCorrect/(float)testImages.size()) << endl;
  }
