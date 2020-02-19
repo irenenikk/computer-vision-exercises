@@ -3,6 +3,9 @@
 #include <iomanip>
 #include <opencv2/opencv.hpp>
 #include <opencv2/ml/ml.hpp>
+#include "opencv2/highgui.hpp"
+#include "opencv2/imgcodecs.hpp"
+#include "opencv2/imgproc.hpp"
 #include <tuple>
 #include "opencv2/xfeatures2d.hpp"
 #include <map>
@@ -63,26 +66,13 @@ int getLabelCategorical(String label, map<String, int> &labelToCat, map<int, Str
     return runningLabelCat;
 }
 
-void getData(vector<Mat> &images, Mat &labels, map<String, int> &labelToCat, 
-                map<int, String> &catToLabel, int &runningLabelCat, String folder){
-    auto folderNames = getFilesFromFolder(folder);
-    auto dataTuples = readImagesFromFolders(folder, folderNames);
-    for (tuple<Mat, String> imageTuple: dataTuples) {
-        Mat image = get<0>(imageTuple);
-        String label = get<1>(imageTuple);
-        images.push_back(image);
-        int labelCategory = getLabelCategorical(label, labelToCat, catToLabel, runningLabelCat);
-        labels.push_back(labelCategory);
-    }
-}
-
-void saveMatrixToFile(String filename, String variable, Mat content){
+void saveVectorofVectorsToFile(String filename, String variable, vector<vector<float>> content){
     FileStorage fs(filename, FileStorage::WRITE);
     fs << variable << content;
     fs.release();
 }
 
-void saveVectorofVectorsToFile(String filename, String variable, vector<vector<float>> content){
+void saveMatrixToFile(String filename, String variable, Mat content){
     FileStorage fs(filename, FileStorage::WRITE);
     fs << variable << content;
     fs.release();
@@ -104,8 +94,21 @@ vector<vector<float>> loadVectorOfVectors(String filename, String variable){
     return vector;
 }
 
-void getRawFeatures(vector<int> trainingIndices, vector<Mat> trainingImages, 
-                        Mat &allSiftDescriptors, vector<vector<float>> &allGISTFeatures){
+void getData(vector<Mat> &images, vector<int> &labels, map<String, int> &labelToCat, 
+                map<int, String> &catToLabel, int &runningLabelCat, String folder){
+    auto folderNames = getFilesFromFolder(folder);
+    auto dataTuples = readImagesFromFolders(folder, folderNames);
+    for (tuple<Mat, String> imageTuple: dataTuples) {
+        Mat image = get<0>(imageTuple);
+        String label = get<1>(imageTuple);
+        images.push_back(image);
+        int labelCategory = getLabelCategorical(label, labelToCat, catToLabel, runningLabelCat);
+        labels.push_back(labelCategory);
+    }
+}
+
+void getRawFeatures(vector<Mat> trainingImages, Mat &allSiftDescriptors, 
+                    vector<vector<float>> &allGISTFeatures, Mat &b_hist, Mat &g_hist, Mat &r_hist){
     GIST gist_ext(DEFAULT_PARAMS);
     cout << "Getting raw features from images" << endl;
     // calculate the sift features
@@ -118,10 +121,11 @@ void getRawFeatures(vector<int> trainingIndices, vector<Mat> trainingImages,
     ifstream gistFeatureFile(GISTFile);
     if (!dictionaryFile || !gistFeatureFile){
         cout << "Extracting features for training data" << endl;
-        for (size_t i=0; i<trainingIndices.size(); i++) {
-            Mat image = trainingImages[trainingIndices[i]];
+        for (size_t i=0; i<trainingImages.size(); i++) {
+            Mat image = trainingImages[i];
             Mat grayImage;
             cvtColor(image, grayImage, COLOR_BGR2GRAY);
+            // SIFT
             vector<KeyPoint> keypoints;
             f2d->detect(grayImage, keypoints);
             // draw the found keypoints
@@ -131,11 +135,19 @@ void getRawFeatures(vector<int> trainingIndices, vector<Mat> trainingImages,
             Mat descriptors;
             f2d->compute(grayImage, keypoints, descriptors);
             allSiftDescriptors.push_back(descriptors);
+            // GIST
             vector<float> GISTFeatures;
             gist_ext.extract(image, GISTFeatures);
             allGISTFeatures.push_back(GISTFeatures);
-            cout << "SIFT features " << allSiftDescriptors.size() << endl;
-            cout << "GIST features " << allGISTFeatures.size() << endl;
+            // Color histogram
+            int histSize = 256;
+            vector<Mat> bgr_planes;
+            split(image, bgr_planes);
+            float range[] = { 0, 256 };
+            const float* histRange = { range };
+            calcHist(&bgr_planes[0], 1, 0, Mat(), b_hist, 1, &histSize, &histRange, true, false);
+            calcHist(&bgr_planes[1], 1, 0, Mat(), g_hist, 1, &histSize, &histRange, true, false);
+            calcHist(&bgr_planes[2], 1, 0, Mat(), r_hist, 1, &histSize, &histRange, true, false);
         }
         saveMatrixToFile(SIFTFile, siftVariableName, allSiftDescriptors);
         saveVectorofVectorsToFile(GISTFile, gistVariableName, allGISTFeatures);
@@ -145,19 +157,26 @@ void getRawFeatures(vector<int> trainingIndices, vector<Mat> trainingImages,
     }
 }
 
-void getBowSiftFeatures(vector<Mat> images, Ptr<BOWImgDescriptorExtractor> &bowDE, 
-                            Mat allSiftDescriptors, Mat &BOWDescriptors){
+void getBowSiftFeatures(vector<Mat> images, Ptr<BOWImgDescriptorExtractor> &bowDE, Mat &BOWDescriptors){
     cout << "Starting KNN for SIFT features" << endl;
-    Ptr<Feature2D> detector = xfeatures2d::SIFT::create();
-    for (size_t i=0; i<images.size(); i++) {
-        Mat image = images[i];
-        Mat grayImage;
-        cvtColor(image, grayImage, COLOR_BGR2GRAY);
-        vector<KeyPoint> keypoints;        
-        detector->detect(grayImage, keypoints);
-        Mat bowDescriptor;
-        bowDE->compute(grayImage, keypoints, bowDescriptor);
-        BOWDescriptors.push_back(bowDescriptor);
+    String BOWDescriptorFileName = "BOWDescriptors.yml";
+    String BOWDescriptorVariable = "BOWDescriptors";
+    ifstream BOWDescriptorFile(BOWDescriptorFileName);
+    if (!BOWDescriptorFile) {
+        Ptr<Feature2D> detector = xfeatures2d::SIFT::create();
+        for (size_t i=0; i<images.size(); i++) {
+            Mat image = images[i];
+            Mat grayImage;
+            cvtColor(image, grayImage, COLOR_BGR2GRAY);
+            vector<KeyPoint> keypoints;        
+            detector->detect(grayImage, keypoints);
+            Mat bowDescriptor;
+            bowDE->compute(grayImage, keypoints, bowDescriptor);
+            BOWDescriptors.push_back(bowDescriptor);
+        }
+        saveMatrixToFile(BOWDescriptorFileName, BOWDescriptorVariable, BOWDescriptors);
+    } else {
+        BOWDescriptors = loadMatrix(BOWDescriptorFileName, BOWDescriptorVariable);
     }
 }
 
@@ -168,7 +187,7 @@ Ptr<BOWImgDescriptorExtractor> getBowDE(Mat allSiftDescriptors){
     Mat dictionary;
     if (!dictionaryFile){
         cout << "Training a BOW dictionary" << endl;
-        int dictionarySize = 8000;
+        int dictionarySize = 600;
         TermCriteria termCrit = TermCriteria();
         BOWKMeansTrainer bowTrainer(dictionarySize, termCrit, 1, KMEANS_PP_CENTERS);
         dictionary = bowTrainer.cluster(allSiftDescriptors);
@@ -214,29 +233,47 @@ int main(int argc, char* argv[]){
     int runningLabelCat = 0;
     map<String, int> labelToCat;
     map<int, String> catToLabel;
-    vector<Mat> trainingImages;
-    Mat trainingLabels;
+    vector<Mat> allTrainingImages;
+    vector<int> allTrainingLabels;
     vector<Mat> testImages;
-    Mat testLabels;
-    getData(trainingImages, trainingLabels, labelToCat, catToLabel, runningLabelCat, trainingSetFolder);
-    //getData(testImages, testLabels, labelToCat, catToLabel, runningLabelCat, testSetFolder);
+    vector<int> testLabels;
+    getData(allTrainingImages, allTrainingLabels, labelToCat, catToLabel, runningLabelCat, trainingSetFolder);
+    getData(testImages, testLabels, labelToCat, catToLabel, runningLabelCat, testSetFolder);
+    // get SIFT features for training data
+    Mat allSiftDescriptors;
+    vector<vector<float>> allGISTFeatures;
+    Mat b_hist, g_hist, r_hist;
+    getRawFeatures(allTrainingImages, allSiftDescriptors, allGISTFeatures, b_hist, g_hist, r_hist);
+    // Run KNN in order to bin descriptors
+    // TODO: does this create a data leakage? --> YES it does
+    auto bowDE = getBowDE(allSiftDescriptors);
+    Mat allBowDescriptors;
+    getBowSiftFeatures(allTrainingImages, bowDE, allBowDescriptors);
     // shuffle the test dataset before splitting into dev and test
-    vector<int> indices(trainingImages.size());
+    vector<int> indices(allTrainingImages.size());
     iota(indices.begin(), indices.end(), 0);
     random_shuffle(indices.begin(), indices.end());
     vector<int> developmentIndices(indices.begin(), indices.begin() + 100);
     vector<int> trainingIndices(indices.begin() + 100, indices.end());
-    // get SIFT features for training data
-    Mat allSiftDescriptors;
-    vector<vector<float>> trainingGISTFeatures;
-    getRawFeatures(trainingIndices, trainingImages, allSiftDescriptors, trainingGISTFeatures);
-    // Run KNN in order to bin descriptors
-    auto bowDE = getBowDE(allSiftDescriptors);
+    // separate training set
     Mat trainingBowDescriptors;
+    Mat trainingLabels;
+    vector<vector<float>> trainingGISTFeatures;
+    Mat colorHistogram;
+    for (size_t i=0; i<trainingIndices.size(); i++) {
+        auto index = trainingIndices[i];
+        trainingBowDescriptors.push_back(allBowDescriptors.row(index));
+        trainingLabels.push_back(allTrainingLabels[index]);
+        trainingGISTFeatures.push_back(allGISTFeatures[index]);
+        Mat concatTemp;
+        Mat concatHist;
+        hconcat(b_hist, g_hist, concatTemp);
+        hconcat(concatTemp, r_hist, concatHist);
+        colorHistogram.push_back(concatHist.row(i));
+    }
     Mat testBowDescriptors;
-    //getBowSiftFeatures(trainingImages, bowDE, allSiftDescriptors, trainingBowDescriptors);
-    //getBowSiftFeatures(testImages, bowDE, allSiftDescriptors, testBowDescriptors);
-    //auto testGISTFeatures = getTestGISTFeatures(testImages);
+    getBowSiftFeatures(testImages, bowDE, testBowDescriptors);
+    auto testGISTFeatures = getTestGISTFeatures(testImages);
     // Train the SVM
     cout << "Training an SVM with SIFT and GIST features" << endl;
     /*
@@ -247,14 +284,12 @@ int main(int argc, char* argv[]){
     svmSIFT->train(trainingBowDescriptors, ROW_SAMPLE, trainingLabels);
     */
     auto trainingGISTMat = vectorToMat(trainingGISTFeatures);
-    cout << trainingGISTMat.size() << endl;
-    cout << trainingLabels.size() << endl;
     Ptr<SVM> svmGIST = SVM::create();
     svmGIST->setType(SVM::C_SVC);
     svmGIST->setKernel(SVM::LINEAR);
     svmGIST->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 100, 1e-6));
     svmGIST->train(trainingGISTMat, ROW_SAMPLE, trainingLabels);
-    cout << "Testing the SVM with SIFT features" << endl;
+    cout << "Testing the SVM with using the development set" << endl;
     int siftCorrect = 0;
     int gistCorrect = 0;
     for (size_t i=0; i<developmentIndices.size(); i++) {
