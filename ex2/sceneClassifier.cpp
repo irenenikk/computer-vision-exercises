@@ -115,14 +115,14 @@ void drawHistogram(Mat image, Mat b_hist, Mat g_hist, Mat r_hist){
     int bin_w = cvRound((double) hist_w/histSize);
     Mat histImage(hist_h, hist_w, CV_8UC3, Scalar( 0,0,0));
     for( int i = 1; i < histSize; i++ ){
-        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(b_hist.at<float>(i-1))),
-              Point(bin_w*(i), hist_h - cvRound(b_hist.at<float>(i))),
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(b_hist.at<float>(i-1)*hist_h)),
+              Point(bin_w*(i), hist_h - cvRound(b_hist.at<float>(i)*hist_h)),
               Scalar(255, 0, 0), 2, 8, 0);
-        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(g_hist.at<float>(i-1))),
-              Point(bin_w*(i), hist_h - cvRound(g_hist.at<float>(i))),
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(g_hist.at<float>(i-1)*hist_h)),
+              Point(bin_w*(i), hist_h - cvRound(g_hist.at<float>(i)*hist_h)),
               Scalar(0, 255, 0), 2, 8, 0);
-        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(r_hist.at<float>(i-1))),
-              Point(bin_w*(i), hist_h - cvRound(r_hist.at<float>(i))),
+        line(histImage, Point(bin_w*(i-1), hist_h - cvRound(r_hist.at<float>(i-1)*hist_h)),
+              Point(bin_w*(i), hist_h - cvRound(r_hist.at<float>(i)*hist_h)),
               Scalar(0, 0, 255), 2, 8, 0);
     }
     imshow("Image", image);
@@ -144,7 +144,7 @@ Mat getColorHistogram(Mat image){
     normalize(b_hist, b_hist, 0, 1, NORM_MINMAX, -1, Mat());
     normalize(g_hist, g_hist, 0, 1, NORM_MINMAX, -1, Mat());
     normalize(r_hist, r_hist, 0, 1, NORM_MINMAX, -1, Mat());
-    drawHistogram(image, b_hist, g_hist, r_hist);
+    //drawHistogram(image, b_hist, g_hist, r_hist);
     Mat concatTemp;
     Mat concatHist;
     vconcat(b_hist, g_hist, concatTemp);
@@ -298,6 +298,12 @@ Ptr<SVM> createSVM(Mat trainingData, Mat trainingLabels, SVM::KernelTypes kernel
     return svmGIST;
 }
 
+Mat convertVectorToMat(vector<float> vector){
+    Mat m = Mat(1, vector.size(), CV_32F);
+    memcpy(m.data, vector.data(), vector.size()*sizeof(float));
+    return m;
+}
+
 int main(int argc, char* argv[]){
     String trainingSetFolder = argv[1];
     String testSetFolder = argv[2];
@@ -315,7 +321,6 @@ int main(int argc, char* argv[]){
     vector<vector<float>> allGISTFeatures;
     Mat allColorHistograms;
     getRawFeatures(allTrainingImages, allSiftDescriptors, allGISTFeatures, allColorHistograms);
-    cout << "color histogram " << allColorHistograms.size() << endl;
     // shuffle the test dataset before splitting into dev and test
     // the shuffled order will always be the same because the seed is always the same
     cout << "Splitting indices into training, development and test sets" << endl;
@@ -412,27 +417,53 @@ int main(int argc, char* argv[]){
     int rbfSiftCorrect = 0;
     int rbfGistCorrect = 0;
     int rbfColorCorrect = 0;
+    int rbfGistSiftCorrect = 0;
+    int rbfGistColorCorrect = 0;
+    int rbfSiftColorCorrect = 0;
     // create non-linear svms
     auto rbfSvmSIFT = createSVM(trainingBowDescriptors, trainingLabels, SVM::RBF);
     auto rbfSvmGIST = createSVM(trainingGISTMat, trainingLabels, SVM::RBF);
     auto rbfSvmColor = createSVM(trainingColorHistograms, trainingLabels, SVM::RBF);
+    // create combined feature sets and respective svms
+    Mat trainingSiftColor;
+    hconcat(trainingBowDescriptors, trainingColorHistograms, trainingSiftColor);
+    Mat trainingGistColor;
+    hconcat(trainingGISTMat, trainingColorHistograms, trainingGistColor);
+    Mat trainingGistSift;
+    hconcat(trainingGISTMat, trainingBowDescriptors, trainingGistSift);
+    auto rbfSvmSIFTColor = createSVM(trainingSiftColor, trainingLabels, SVM::RBF);
+    auto rbfSvmGistColor = createSVM(trainingGistColor, trainingLabels, SVM::RBF);
+    auto rbfSvmGistSift = createSVM(trainingGistSift, trainingLabels, SVM::RBF);
     for (size_t i=0; i<testImages.size(); i++) {
         auto siftDescriptors = testBowDescriptors.row(i);
         auto linearSiftPredictedLabel = svmSIFT->predict(siftDescriptors);
         auto rbfSiftPredictedLabel = rbfSvmSIFT->predict(siftDescriptors);
+        Mat siftColor;
+        hconcat(siftDescriptors, testColorHistograms[i], siftColor);
+        auto rbfSiftColorPredictedLabel = rbfSvmSIFTColor->predict(siftColor);
+
         auto gistDescriptors = testGISTFeatures[i];
         auto linearGistPredictedLabel = svmGIST->predict(gistDescriptors);
         auto rbfGistPredictedLabel = rbfSvmGIST->predict(gistDescriptors);
+        Mat gistColor;
+        hconcat(convertVectorToMat(gistDescriptors), testColorHistograms[i], gistColor);
+        auto rbfGistColorPredictedLabel = rbfSvmGistColor->predict(gistColor);
+
         auto colorFeatures = testColorHistograms[i];
         auto linearColorPredictedLabel = svmColor->predict(colorFeatures);
         auto rbfColorPredictedLabel = rbfSvmColor->predict(colorFeatures);
+
+        Mat siftgist;
+        hconcat(convertVectorToMat(gistDescriptors), siftDescriptors, siftgist);
+        auto rbfGistSiftPredictedLabel = rbfSvmGistSift->predict(siftgist);
+
         auto trueLabel = testLabels[i];
         if (linearSiftPredictedLabel == trueLabel){
             linearSiftCorrect++;
         }
         if (rbfSiftPredictedLabel == trueLabel){
             rbfSiftCorrect++;
-        }        
+        }
         if (linearGistPredictedLabel == trueLabel){
             linearGistCorrect++;
         }
@@ -445,11 +476,23 @@ int main(int argc, char* argv[]){
         if (rbfColorPredictedLabel == trueLabel){
             rbfColorCorrect++;
         }
+        if (rbfSiftColorPredictedLabel == trueLabel){
+            rbfSiftColorCorrect++;
+        }
+        if (rbfGistColorPredictedLabel == trueLabel){
+            rbfGistColorCorrect++;
+        }
+        if (rbfGistSiftPredictedLabel == trueLabel){
+            rbfGistSiftCorrect++;
+        }        
     }
     cout << "Linear SVM accuracy in the test set using SIFT is " << ((float)linearSiftCorrect/(float)testImages.size()) << endl;
     cout << "Linear SVM accuracy in the test set using GIST is " << ((float)linearGistCorrect/(float)testImages.size()) << endl;
     cout << "Linear SVM accuracy in the dev set using color histograms is " << ((float)linearColorCorrect/(float)testImages.size()) << endl;
     cout << "RBF SVM accuracy in the test set using SIFT is " << ((float)rbfSiftCorrect/(float)testImages.size()) << endl;
     cout << "RBF SVM accuracy in the test set using GIST is " << ((float)rbfGistCorrect/(float)testImages.size()) << endl;
-    cout << "RBF SVM accuracy in the dev set using color histograms is " << ((float)rbfColorCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using color histograms is " << ((float)rbfColorCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using SIFT + color histograms is " << ((float)rbfSiftColorCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using GIST + color histograms is " << ((float)rbfGistColorCorrect/(float)testImages.size()) << endl;
+    cout << "RBF SVM accuracy in the test set using SIFT + GIST is " << ((float)rbfGistSiftCorrect/(float)testImages.size()) << endl;
  }
