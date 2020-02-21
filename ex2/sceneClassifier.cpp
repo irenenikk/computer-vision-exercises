@@ -108,10 +108,9 @@ vector<vector<float>> loadVectorOfVectors(String filename, String variable){
     return vector;
 }
 
-void drawHistogram(Mat image, Mat b_hist, Mat g_hist, Mat r_hist){
+void drawHistogram(Mat image, Mat b_hist, Mat g_hist, Mat r_hist, int histSize){
     // using code from this tutorial: https://docs.opencv.org/3.4/d8/dbc/tutorial_histogram_calculation.html
     int hist_w = 512, hist_h = 400;
-    int histSize = 256;
     int bin_w = cvRound((double) hist_w/histSize);
     Mat histImage(hist_h, hist_w, CV_8UC3, Scalar( 0,0,0));
     for( int i = 1; i < histSize; i++ ){
@@ -130,7 +129,27 @@ void drawHistogram(Mat image, Mat b_hist, Mat g_hist, Mat r_hist){
     waitKey();
 }
 
-Mat getColorHistogram(Mat image){
+Mat getHSVColorHistogram(Mat image){
+    // partly based on this snippet: https://stackoverflow.com/questions/20028933/calculate-hsv-histogram-of-a-coloured-image-is-it-different-from-h-s-histogram
+    Mat hsv;
+    cvtColor(image, hsv, COLOR_BGR2HSV);
+    int h_bins = 50; 
+    int s_bins = 32;
+    int v_bins = 10;
+    int histSize[] = { h_bins, s_bins, v_bins };
+    float h_ranges[] = {0, 180};
+    float s_ranges[] = {0, 256};
+    float v_ranges[] = {0, 256};
+    const float* ranges[] = { h_ranges, s_ranges, v_ranges };
+    int channels[] = { 0, 1, 2};
+    Mat histogram;
+    calcHist( &hsv, 1, channels, Mat(), histogram, 3, histSize, ranges, true, false);
+    normalize(histogram, histogram, 0, 1, NORM_MINMAX, -1, Mat() );
+    histogram = histogram.reshape(0,1);
+    return histogram;
+}
+
+Mat getRBGColorHistogram(Mat image){
     // using code from this tutorial: https://docs.opencv.org/3.4/d8/dbc/tutorial_histogram_calculation.html
     int histSize = 256;
     vector<Mat> bgr_planes;
@@ -144,7 +163,7 @@ Mat getColorHistogram(Mat image){
     normalize(b_hist, b_hist, 0, 1, NORM_MINMAX, -1, Mat());
     normalize(g_hist, g_hist, 0, 1, NORM_MINMAX, -1, Mat());
     normalize(r_hist, r_hist, 0, 1, NORM_MINMAX, -1, Mat());
-    //drawHistogram(image, b_hist, g_hist, r_hist);
+    //drawHistogram(image, b_hist, g_hist, r_hist, histSize);
     Mat concatTemp;
     Mat concatHist;
     vconcat(b_hist, g_hist, concatTemp);
@@ -160,7 +179,6 @@ void getData(vector<Mat> &images, vector<int> &labels, map<String, int> &labelTo
         Mat image = get<0>(imageTuple);
         String label = get<1>(imageTuple);
         images.push_back(image);
-        auto colorHistogram = getColorHistogram(image);
         int labelCategory = getLabelCategorical(label, labelToCat, catToLabel, runningLabelCat);
         labels.push_back(labelCategory);
     }
@@ -202,8 +220,8 @@ void getRawFeatures(vector<Mat> allTrainingImages, vector<Mat> &allSiftDescripto
             vector<float> GISTFeatures;
             gist_ext.extract(image, GISTFeatures);
             allGISTFeatures.push_back(GISTFeatures);
-            // Color histogram
-            Mat concatHist = getColorHistogram(image);
+            // change to getRBGColorHistogram to use RBG colors
+            Mat concatHist = getHSVColorHistogram(image);
             colorHistograms.push_back(concatHist);
         }
         saveVectorofMatricesToFile(SIFTFile, siftVariableName, allSiftDescriptors);
@@ -274,7 +292,8 @@ void getTestFeatures(vector<Mat> testImages, vector<vector<float>> &testGISTFeat
         vector<float> GISTFeatures;
         gist_ext.extract(image, GISTFeatures);
         testGISTFeatures.push_back(GISTFeatures);
-        Mat colorHistogram = getColorHistogram(image);
+        // change to getRBGColorHistogram to use RBG colors
+        Mat colorHistogram = getHSVColorHistogram(image);
         colorHistograms.push_back(colorHistogram);
     }
 }
@@ -488,7 +507,7 @@ int main(int argc, char* argv[]){
     }
     cout << "Linear SVM accuracy in the test set using SIFT is " << ((float)linearSiftCorrect/(float)testImages.size()) << endl;
     cout << "Linear SVM accuracy in the test set using GIST is " << ((float)linearGistCorrect/(float)testImages.size()) << endl;
-    cout << "Linear SVM accuracy in the dev set using color histograms is " << ((float)linearColorCorrect/(float)testImages.size()) << endl;
+    cout << "Linear SVM accuracy in the test set using color histograms is " << ((float)linearColorCorrect/(float)testImages.size()) << endl;
     cout << "RBF SVM accuracy in the test set using SIFT is " << ((float)rbfSiftCorrect/(float)testImages.size()) << endl;
     cout << "RBF SVM accuracy in the test set using GIST is " << ((float)rbfGistCorrect/(float)testImages.size()) << endl;
     cout << "RBF SVM accuracy in the test set using color histograms is " << ((float)rbfColorCorrect/(float)testImages.size()) << endl;
